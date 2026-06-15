@@ -1,14 +1,77 @@
 import html as _html
 import io
+import json
 from datetime import datetime
 
 import openai
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from openai import OpenAI
 
-# Fix #9: constant at module level, not mid-script
 MAX_BYTES = 200 * 1024
+
+# Categorical columns whose names contain these substrings are treated as
+# grouping dimensions and get a full group-by breakdown.
+_DIMENSION_HINTS = {
+    "region", "category", "product", "customer", "status", "date",
+    "month", "year", "quarter", "type", "department", "segment",
+    "country", "city", "store", "channel", "brand", "team", "group",
+    "name", "class", "division", "area", "zone",
+}
+
+
+def build_summary(df: pd.DataFrame) -> str:
+    """
+    Pre-compute statistics with Pandas and return a structured text block.
+    GPT receives this instead of raw CSV rows so all arithmetic is exact.
+    """
+    sections: list[str] = []
+    numeric_cols = df.select_dtypes(include="number").columns.tolist()
+    cat_cols = df.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
+
+    sections.append(
+        f"Rows: {len(df):,}  |  Columns: {', '.join(df.columns.tolist())}\n"
+    )
+
+    # ── Global numeric statistics ────────────────────────────────────────────
+    if numeric_cols:
+        sections.append("OVERALL NUMERIC STATISTICS")
+        for col in numeric_cols:
+            s = df[col].dropna()
+            sections.append(
+                f"  {col}: total={s.sum():,.6g}  mean={s.mean():,.6g}  "
+                f"min={s.min():,.6g}  max={s.max():,.6g}  non-null count={len(s):,}"
+            )
+        sections.append("")
+
+    # ── Group-by breakdowns ──────────────────────────────────────────────────
+    for cat_col in cat_cols:
+        n_unique = df[cat_col].nunique()
+        # Skip ID-like columns (too many unique values) and constants (1 value)
+        if n_unique < 2 or n_unique > 50:
+            continue
+        col_lower = cat_col.lower()
+        is_dimension = (
+            any(hint in col_lower for hint in _DIMENSION_HINTS) or n_unique <= 20
+        )
+        if not is_dimension:
+            continue
+
+        sections.append(f"BREAKDOWN BY: {cat_col}")
+        if numeric_cols:
+            grp = (
+                df.groupby(cat_col, observed=True)[numeric_cols]
+                .agg(["sum", "mean", "count"])
+            )
+            grp.columns = [f"{c[0]}_{c[1]}" for c in grp.columns]
+            sections.append(grp.reset_index().to_string(index=False))
+        else:
+            for val, cnt in df[cat_col].value_counts().items():
+                sections.append(f"  {val}: {cnt:,} rows")
+        sections.append("")
+
+    return "\n".join(sections)
 
 st.set_page_config(page_title="CSV Analyzer", layout="centered")
 
@@ -250,15 +313,12 @@ if df is not None:
     )
 
     if run_clicked:
-        csv_text = df.to_csv(index=False)
+        summary = build_summary(df)
         prompt = (
-            "You are a data analyst. The user has provided a CSV dataset and a question. "
-            "Answer the question accurately and concisely based solely on the data below.\n\n"
-            f"CSV Data:\n{csv_text}\n\n"
+            f"Pre-computed statistical summary of the dataset:\n\n{summary}\n\n"
             f"Question: {question}"
         )
 
-        # Fix #6: use typed OpenAI exceptions instead of string matching
         try:
             client = OpenAI(api_key=api_key.strip())
             with st.spinner("Running analysis…"):
@@ -268,8 +328,13 @@ if df is not None:
                         {
                             "role": "system",
                             "content": (
-                                "You are a helpful data analyst. "
-                                "Answer questions about CSV data clearly and accurately."
+                                "You are a data analyst. You are given a pre-computed "
+                                "statistical summary produced by Pandas — not raw rows. "
+                                "All totals, means, and counts in the summary are exact. "
+                                "Interpret these results and answer the question clearly "
+                                "and concisely. Do not recalculate, re-sum, or re-derive "
+                                "any numbers. Only reference figures that appear explicitly "
+                                "in the summary."
                             ),
                         },
                         {"role": "user", "content": prompt},
@@ -304,6 +369,47 @@ if df is not None:
                     </div>
                     """,
                     unsafe_allow_html=True,
+                )
+
+                # Copy button — rendered as a JS component so the click is
+                # handled entirely client-side with no Streamlit rerender
+                js_answer = json.dumps(answer)
+                components.html(
+                    f"""
+                    <button
+                        id="copy-btn"
+                        onclick="
+                            navigator.clipboard.writeText({js_answer}).then(() => {{
+                                const btn = document.getElementById('copy-btn');
+                                btn.textContent = 'Copied';
+                                btn.style.borderColor = '#111827';
+                                btn.style.color = '#111827';
+                                setTimeout(() => {{
+                                    btn.textContent = 'Copy Results';
+                                    btn.style.borderColor = '#d1d5db';
+                                    btn.style.color = '#374151';
+                                }}, 2000);
+                            }});
+                        "
+                        onmouseover="this.style.borderColor='#9ca3af'"
+                        onmouseout="if(this.textContent!=='Copied')this.style.borderColor='#d1d5db'"
+                        style="
+                            background: #ffffff;
+                            border: 1px solid #d1d5db;
+                            border-radius: 6px;
+                            color: #374151;
+                            font-size: 0.72rem;
+                            font-weight: 600;
+                            letter-spacing: 0.07em;
+                            text-transform: uppercase;
+                            padding: 6px 14px;
+                            cursor: pointer;
+                            font-family: Inter, 'Segoe UI', system-ui, sans-serif;
+                            transition: border-color 0.15s, color 0.15s;
+                        "
+                    >Copy Results</button>
+                    """,
+                    height=40,
                 )
 
         except openai.AuthenticationError:
