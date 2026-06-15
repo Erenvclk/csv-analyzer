@@ -249,20 +249,20 @@ api_key = st.text_input(
 st.divider()
 
 # ── File Upload ──────────────────────────────────────────────────────────────
-# Fix #10: removed redundant label_visibility="visible" (it is the default)
 uploaded_file = st.file_uploader(
     "Dataset",
     type=["csv"],
     help="CSV files up to 200 KB.",
 )
 
-# Fix #4: cache parsed DataFrame in session_state so it is not re-parsed on
-# every keystroke rerender — keyed by filename so switching files still works
 df = None
 
 if uploaded_file is not None:
-    if st.session_state.get("file_name") != uploaded_file.name:
-        raw = uploaded_file.getvalue()
+    # getvalue() is an in-memory read; the expensive pd.read_csv is skipped
+    # when the file signature (name + size) hasn't changed
+    raw = uploaded_file.getvalue()
+    file_sig = (uploaded_file.name, len(raw))
+    if st.session_state.get("file_sig") != file_sig:
         if len(raw) > MAX_BYTES:
             st.error(
                 f"File size ({len(raw) / 1024:.1f} KB) exceeds the 200 KB limit. "
@@ -281,11 +281,10 @@ if uploaded_file is not None:
                     st.session_state.df = parsed
                     st.session_state.raw_len = len(raw)
             except Exception:
-                # Fix #3: don't leak the raw pandas exception message
                 st.error("Could not read file. Make sure it is a valid CSV.")
                 st.session_state.df = None
                 st.session_state.raw_len = 0
-        st.session_state.file_name = uploaded_file.name
+        st.session_state.file_sig = file_sig
 
     df = st.session_state.get("df")
     raw_len = st.session_state.get("raw_len", 0)
@@ -299,7 +298,6 @@ if uploaded_file is not None:
 if df is not None:
     st.divider()
 
-    # Fix #5: cap question length to prevent runaway token usage
     question = st.text_input(
         "Question",
         placeholder="e.g. Which product had the highest sales last quarter?",
@@ -313,13 +311,12 @@ if df is not None:
     )
 
     if run_clicked:
-        summary = build_summary(df)
-        prompt = (
-            f"Pre-computed statistical summary of the dataset:\n\n{summary}\n\n"
-            f"Question: {question}"
-        )
-
         try:
+            summary = build_summary(df)
+            prompt = (
+                f"Pre-computed statistical summary of the dataset:\n\n{summary}\n\n"
+                f"Question: {question}"
+            )
             client = OpenAI(api_key=api_key.strip())
             with st.spinner("Running analysis…"):
                 response = client.chat.completions.create(
@@ -343,17 +340,12 @@ if df is not None:
                     temperature=0.1,
                 )
 
-            # Fix #7: guard against empty choices list before indexing
             if not response.choices:
                 st.error("No result was returned. The request may have been filtered.")
             else:
                 answer = response.choices[0].message.content
                 timestamp = datetime.now().strftime("%d %b %Y · %H:%M")
 
-                # Fix #1 + #8: HTML-escape both user input and model output
-                # before injecting into an unsafe_allow_html block, then
-                # replace newlines with <br> after escaping (not inside the
-                # f-string, avoiding the chr(10) workaround)
                 safe_q = _html.escape(question)
                 safe_a = _html.escape(answer).replace("\n", "<br>")
 
@@ -371,8 +363,6 @@ if df is not None:
                     unsafe_allow_html=True,
                 )
 
-                # Copy button — rendered as a JS component so the click is
-                # handled entirely client-side with no Streamlit rerender
                 js_answer = json.dumps(answer)
                 components.html(
                     f"""
@@ -427,7 +417,6 @@ if df is not None:
             if "quota" in str(exc).lower():
                 st.error("Usage limit reached. Check your account status and try again.")
             else:
-                # Fix #2: never leak the raw SDK message to the user
                 st.error("An unexpected error occurred. Please try again.")
         except Exception:
             st.error("An unexpected error occurred. Please try again.")
