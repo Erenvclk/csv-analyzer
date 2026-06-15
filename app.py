@@ -1,12 +1,10 @@
 import html as _html
 import io
-import json
 from datetime import datetime
 
 import openai
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 from openai import OpenAI
 
 MAX_BYTES = 200 * 1024
@@ -363,43 +361,10 @@ if df is not None:
                     unsafe_allow_html=True,
                 )
 
-                js_answer = json.dumps(answer)
-                components.html(
-                    f"""
-                    <button
-                        id="copy-btn"
-                        onclick="
-                            navigator.clipboard.writeText({js_answer}).then(() => {{
-                                const btn = document.getElementById('copy-btn');
-                                btn.textContent = 'Copied';
-                                btn.style.borderColor = '#111827';
-                                btn.style.color = '#111827';
-                                setTimeout(() => {{
-                                    btn.textContent = 'Copy Results';
-                                    btn.style.borderColor = '#d1d5db';
-                                    btn.style.color = '#374151';
-                                }}, 2000);
-                            }});
-                        "
-                        onmouseover="this.style.borderColor='#9ca3af'"
-                        onmouseout="if(this.textContent!=='Copied')this.style.borderColor='#d1d5db'"
-                        style="
-                            background: #ffffff;
-                            border: 1px solid #d1d5db;
-                            border-radius: 6px;
-                            color: #374151;
-                            font-size: 0.72rem;
-                            font-weight: 600;
-                            letter-spacing: 0.07em;
-                            text-transform: uppercase;
-                            padding: 6px 14px;
-                            cursor: pointer;
-                            font-family: Inter, 'Segoe UI', system-ui, sans-serif;
-                            transition: border-color 0.15s, color 0.15s;
-                        "
-                    >Copy Results</button>
-                    """,
-                    height=40,
+                st.text_area(
+                    "Plain text — select all to copy",
+                    value=answer,
+                    height=150,
                 )
 
         except openai.AuthenticationError:
