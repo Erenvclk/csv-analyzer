@@ -29,7 +29,7 @@ cd csv-analyzer
 pip install -r requirements.txt
 python -m streamlit run app.py
 ```
-
+ 
 > **Note:** If `streamlit run app.py` doesn't work, use `python -m streamlit run app.py` instead. This is common on Windows.
 
 ## Limits
